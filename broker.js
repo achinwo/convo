@@ -19,8 +19,10 @@ app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({extended: false}));
 app.use(cookieParser());
 
+const IS_PROD = process.env.NODE_ENV === 'production'
+
 app.get('/', function(req, res) {
-    res.sendFile(path.join(__dirname, 'dashboard','/index.html'))
+    res.sendFile(path.join(__dirname, '/index.html'))
 });
 
 app.use(express.static(path.join(__dirname, '../')))
@@ -49,24 +51,77 @@ const server = http.createServer(app)
 // Listen
 server.listen(11616)
 
-wsServer = new WebSocketServer({
-    httpServer: server,
-    // You should not use autoAcceptConnections for production
-    // applications, as it defeats all standard cross-origin protection
-    // facilities built into the protocol and the browser.  You should
-    // *always* verify the connection's origin and decide whether or not
-    // to accept it.
-    autoAcceptConnections: false
-});
+function requireClean(moduleName) {
+    delete require.cache[require.resolve(moduleName)]
+    return require(moduleName)
+}
+
+const _ = require('lodash')
+
+class WebSocketHandler{
+    
+    constructor(connection){
+        this.conn = connection
+        this.conn.on('message', this.onMessage.bind(this))
+        this.conn.on('close', this.onClose.bind(this))
+        
+        let message = require('./message')
+        this.msgHandler = new message.MessageHandler()
+        this.constructor.HANDLERS[Math.random()] = this
+    }
+    
+    reloadHandler(){
+        let message = requireClean('./message')
+        this.msgHandler = new message.MessageHandler()
+    }
+    
+    onMessage(message){
+        if (message.type !== 'utf8') throw new Error(`unsupported message type: ${message.type}`)
+        let msg = JSON.parse(message.utf8Data)
+        let topic = msg.topic
+        
+        console.log('Received Message: ' + message.utf8Data);
+        
+        if(!IS_PROD) this.reloadHandler()
+        
+        let handlerFunc = this.msgHandler.topicMap[topic]
+        let response
+        
+        if(handlerFunc){
+            response = handlerFunc(this, message)
+        }else{
+            response = {error: {description:`Topic not found: ${topic}`}, data:message}
+        }
+        
+        this.send(response)
+    }
+    
+    send(data){
+        this.conn.sendUTF(JSON.stringify(data), (error) => {
+            if(error){
+                console.error(error)
+            }else{
+                console.log('message sent:', data)
+            }
+        })
+    }
+    
+    onClose(reasonCode, description){
+        console.log((new Date()) + ' Peer ' + this.conn.remoteAddress + ' disconnected.');
+    }
+    
+    static handlers(){
+        return this.HANDLERS
+    }
+}
+
+WebSocketHandler.HANDLERS = {}
+
+wsServer = new WebSocketServer({httpServer: server, autoAcceptConnections: false});
 
 function originIsAllowed(origin) {
     // put logic here to detect whether the specified origin is allowed.
     return true;
-}
-
-function clientMsgHandler(msg) {
-    console.log('msg:', msg.utf8Data)
-    return {test:'yes'}
 }
 
 wsServer.on('request', function(request) {
@@ -76,20 +131,11 @@ wsServer.on('request', function(request) {
         console.log((new Date()) + ' Connection from origin ' + request.origin + ' rejected.');
         return;
     }
+    console.dir(request.resourceURL)
     
     const connection = request.accept('echo-protocol', request.origin);
-    console.log((new Date()) + ' Connection accepted.');
-    connection.on('message', function(message) {
-        if (message.type === 'utf8') {
-            console.log('Received Message: ' + message.utf8Data);
-            connection.sendUTF(clientMsgHandler(message));
-        } else if (message.type === 'binary') {
-            console.log('Received Binary Message of ' + message.binaryData.length + ' bytes');
-            connection.sendBytes(message.binaryData);
-        }
-    });
     
-    connection.on('close', function(reasonCode, description) {
-        console.log((new Date()) + ' Peer ' + connection.remoteAddress + ' disconnected.');
-    });
+    connection._resourceURL = request.resourceURL
+    console.log((new Date()) + ' Connection accepted.');
+    new WebSocketHandler(connection)
 });

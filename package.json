@@ -19,7 +19,9 @@
   "dependencies": {
     "body-parser": "^1.17.2",
     "cookie-parser": "^1.4.3",
+    "ejs": "^2.5.7",
     "express": "^4.15.4",
+    "lodash": "latest",
     "morgan": "^1.8.2",
     "websocket": "^1.0.24"
   }
